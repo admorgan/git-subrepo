@@ -153,8 +153,7 @@ The C<--force> option will "reclone" (completely replace) an existing subdir.
 The C<--method> option will decide how the join process between branches are
 performed. The default option is merge.
 
-The C<clone> command accepts the C<--branch=> C<--edit>, C<--force> and C<--
-message=> options.
+The C<clone> command accepts the C<--branch=> C<--edit>, C<--force> and C<--message=> options.
 
 =item C<< git subrepo init <subdir> [-r <remote>] [-b <branch>] [--method <merge|rebase>] >>
 
