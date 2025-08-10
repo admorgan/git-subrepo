@@ -1,7 +1,7 @@
 SHELL := bash
 
 # Make sure we have git:
-ifeq ($(shell which git),)
+ifeq ($(shell which git 2>/dev/null),)
   $(error 'git' is not installed on this system)
 endif
 
@@ -11,8 +11,7 @@ LIB  := lib/$(NAME)
 DOC  := doc/$(NAME).swim
 MAN1 := man/man1
 EXT  := $(LIB).d
-EXTS := $(shell find $(EXT) -type f) \
-	$(shell find $(EXT) -type l)
+EXTS := $(shell find $(EXT) -type f -o -type l)
 SHARE = share
 
 # Install variables:
@@ -60,18 +59,21 @@ $(DOCKER_TESTS):
 
 # Install support:
 install:
-	install -d -m 0755 $(INSTALL_LIB)/
-	install -C -m 0755 $(LIB) $(INSTALL_LIB)/
-	install -d -m 0755 $(INSTALL_EXT)/
-	install -C -m 0644 $(EXTS) $(INSTALL_EXT)/
-	install -d -m 0755 $(INSTALL_MAN1)/
-	install -C -m 0644 $(MAN1)/$(NAME).1 $(INSTALL_MAN1)/
+	@echo "Installing $(NAME) ..."
+	install -d -m 0755 "$(INSTALL_LIB)/"
+	install -C -m 0755 "$(LIB)" "$(INSTALL_LIB)/"
+	install -d -m 0755 "$(INSTALL_EXT)/"
+	install -C -m 0644 $(EXTS) "$(INSTALL_EXT)/";
+	install -d -m 0755 "$(INSTALL_MAN1)/"
+	install -C -m 0644 "$(MAN1)/$(NAME).1" "$(INSTALL_MAN1)/"
+	@echo "Installation complete"
 
-# Uninstall support:
 uninstall:
-	rm -f $(INSTALL_LIB)/$(NAME)
-	rm -fr $(INSTALL_EXT)
-	rm -f $(INSTALL_MAN1)/$(NAME).1
+	@echo "Uninstalling $(NAME) ..."
+	rm -f "$(INSTALL_LIB)/$(NAME)"
+	rm -fr "$(INSTALL_EXT)"
+	rm -f "$(INSTALL_MAN1)/$(NAME).1"
+	@echo "Uninstallation complete"
 
 env:
 	@echo "export PATH=\"$$PWD/lib:\$$PATH\""
@@ -109,6 +111,7 @@ clean:
 
 define docker-make-test
 	docker run --rm \
+	    --user $(shell id -u):$(shell id -g) \
 	    -v $(PWD):/git-subrepo \
 	    -w /git-subrepo \
 	    $(DOCKER_IMAGE) \
