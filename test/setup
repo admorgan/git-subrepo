@@ -1,9 +1,49 @@
 #!/usr/bin/env bash
 
-# Set this locally for Windows:
-git config core.autocrlf input
-
 set -e
+
+# Isolate git configuration for tests to ensure consistent behavior
+# across different environments and prevent interference from user's
+# global git configuration
+export GIT_CONFIG_GLOBAL=/dev/null
+export GIT_CONFIG_SYSTEM=/dev/null
+
+# Set up minimal git configuration for tests
+setup_git_config() {
+  # Core settings
+  git config --global user.name "Test User"
+  git config --global user.email "test@example.com"
+  git config --global init.defaultBranch "master"
+  git config --global core.autocrlf input
+  git config --global core.filemode true
+  git config --global core.bare false
+  git config --global core.logallrefupdates true
+  git config --global core.repositoryformatversion 0
+
+  # Disable interactive prompts
+  git config --global advice.detachedHead false
+  git config --global advice.pushNonFastForward false
+  git config --global advice.statusHints false
+  git config --global advice.commitBeforeMerge false
+  git config --global advice.resolveConflict false
+  git config --global advice.implicitIdentity false
+  git config --global advice.rmHints false
+
+  # Merge/pull settings
+  git config --global merge.tool false
+  git config --global pull.rebase false
+  git config --global push.default simple
+
+  # Color settings (disable for consistent output)
+  git config --global color.ui false
+  git config --global color.branch false
+  git config --global color.diff false
+  git config --global color.status false
+
+  # Security settings
+  git config --global http.sslverify false
+  git config --global receive.advertisePushOptions false
+}
 
 # Set the GIT_SUBREPO_ROOT for testing.
 source "$PWD"/.rc
@@ -22,15 +62,27 @@ source bash+ :std
 
 source 'lib/git-subrepo'
 
-export TMP=$SCRIPT_DIR/tmp
+if [ -f /.dockerenv ]; then
+    export TMP=/tmp/git-subrepo/tmp
+else
+    export TMP=$SCRIPT_DIR/tmp
+fi
+
 rm -fr "$TMP"
 
-#export GIT_EXEC_PATH=$PWD/lib:$(git --exec-path)
+# Set up isolated git environment
+export HOME="$TMP"
+export XDG_CONFIG_HOME="$TMP"
+export GIT_CONFIG_GLOBAL="$TMP/.gitconfig"
+
 export UPSTREAM=$TMP/upstream
 export OWNER=$TMP/owner
 export COLLAB=$TMP/collab
 
 mkdir -p "$UPSTREAM" "$OWNER" "$COLLAB"
+
+# Initialize isolated git configuration with fixed test settings
+setup_git_config
 
 cp -r test/repo/{foo,bar,init} "$UPSTREAM/"
 
@@ -208,6 +260,232 @@ catch() {
   echo "$error"
 }
 
+# LFS helper functions
+setup-lfs-repo() {
+  local repo_path="$1"
+  (
+    cd "$repo_path"
+    git lfs install
+    git lfs track "*.bin"
+    git lfs track "*.large"
+    git lfs track "*.lfs"
+    git add .gitattributes
+    git commit -m "Add LFS tracking" || true
+  ) &> /dev/null
+}
+
+add-lfs-file() {
+  local file="$1"
+  local content="${2:-LFS file content for $file}"
+  echo "$content" > "$file"
+  git add --force "$file"
+  git commit --quiet -m "add LFS file: $file" &> /dev/null
+}
+
+test-lfs-file-content() {
+  local file="$1"
+  local expected="$2"
+  local actual
+  actual=$(cat "$file")
+  is "$actual" "$expected" "LFS file '$file' has correct content"
+}
+
+# LFS test server helpers
+lfs-test-server-available() {
+  command -v lfs-test-server >/dev/null 2>&1
+}
+
+start-lfs-test-server() {
+  if [ -n "${LFS_TEST_SERVER_PID:-}" ] && kill -0 "$LFS_TEST_SERVER_PID" 2>/dev/null; then
+    return 0
+  fi
+
+  # Ensure git-lfs is present before proceeding (otherwise no point starting server)
+  if ! command -v git-lfs >/dev/null 2>&1; then
+    return 0
+  fi
+
+  # Check if lfs-test-server is already available (including in /tmp/gobin)
+  if ! lfs-test-server-available; then
+    # Try adding /tmp/gobin to PATH first (in case it was installed previously)
+    if [ -x "/tmp/gobin/lfs-test-server" ]; then
+      export PATH="/tmp/gobin:$PATH"
+    elif command -v go >/dev/null 2>&1; then
+      local gobin_dir="/tmp/gobin"
+      mkdir -p "$gobin_dir"
+      (
+        export GO111MODULE=on
+        export GOBIN="$gobin_dir"
+        export GOPROXY=direct
+        export GOTMPDIR="/tmp/go-build"
+        mkdir -p "$GOTMPDIR"
+        go install github.com/git-lfs/lfs-test-server@latest >/dev/null 2>&1 || true
+      )
+      export PATH="$gobin_dir:$PATH"
+    else
+      return 0
+    fi
+  fi
+
+  # If still not available after attempted install, skip
+  if ! lfs-test-server-available; then
+    return 0
+  fi
+
+  export LFS_TEST_SERVER_DIR="${LFS_TEST_SERVER_DIR:-$TMP/lfs-test-server}"
+  mkdir -p "$LFS_TEST_SERVER_DIR"
+  export LFS_TEST_SERVER_HOST="${LFS_TEST_SERVER_HOST:-127.0.0.1}"
+  # Use random port to avoid conflicts
+  export LFS_TEST_SERVER_PORT="${LFS_TEST_SERVER_PORT:-$((RANDOM % 1000 + 8000))}"
+  export LFS_LISTEN="tcp://:${LFS_TEST_SERVER_PORT}"
+  export LFS_HOST="${LFS_TEST_SERVER_HOST}:${LFS_TEST_SERVER_PORT}"
+  export LFS_CONTENTPATH="${LFS_TEST_SERVER_DIR}/content"
+  mkdir -p "$LFS_CONTENTPATH"
+  export LFS_METADB="${LFS_TEST_SERVER_DIR}/lfs.db"
+
+  # Use public mode to avoid authentication complexity
+  export LFS_PUBLIC="true"
+
+  # Start server
+  local log="$LFS_TEST_SERVER_DIR/server.log"
+  lfs-test-server >"$log" 2>&1 &
+  LFS_TEST_SERVER_PID=$!
+  export LFS_TEST_SERVER_PID
+  export LFS_URL="http://${LFS_HOST}/"
+
+  # Wait for it to accept connections (best-effort)
+  local server_ready=false
+  for _ in $(seq 1 50); do
+    if (exec 3<>"/dev/tcp/${LFS_TEST_SERVER_HOST}/${LFS_TEST_SERVER_PORT}") 2>/dev/null; then
+      exec 3>&-
+      server_ready=true
+      break
+    fi
+    sleep 0.1
+  done
+
+  if [ "$server_ready" = "false" ]; then
+    echo "# lfs-test-server failed to accept connections at $LFS_URL" >&2
+    return 1
+  fi
+}
+
+stop-lfs-test-server() {
+  if [ -n "${LFS_TEST_SERVER_PID:-}" ] && kill -0 "$LFS_TEST_SERVER_PID" 2>/dev/null; then
+    kill "$LFS_TEST_SERVER_PID" 2>/dev/null || true
+    wait "$LFS_TEST_SERVER_PID" 2>/dev/null || true
+    unset LFS_TEST_SERVER_PID
+  fi
+}
+
+configure-lfs-url-for-repo() {
+  # Usage: configure-lfs-url-for-repo <path>
+  local repo_path="$1"
+  [ -z "$repo_path" ] && return 0
+  if [ -n "${LFS_URL:-}" ]; then
+    (
+      cd "$repo_path"
+      git lfs install --force
+      git config lfs.url "$LFS_URL"
+      git config lfs.locksverify false
+    ) &> /dev/null || true
+  fi
+}
+
+# Mixed LFS/non-LFS helper functions
+create-non-lfs-repo() {
+  local repo_name="$1"
+  local repo_path="$TMP/$repo_name"
+  mkdir -p "$repo_path"
+  (
+    cd "$repo_path"
+    git init
+    echo "Non-LFS repository content" > README.txt
+    git add README.txt
+    git commit -m "Initialize non-LFS repository"
+  ) &> /dev/null
+  echo "$repo_path"
+}
+
+create-mixed-lfs-scenario() {
+  local main_repo="$1"
+  local sub_repo="$2"
+  local lfs_in_main="${3:-true}"
+  local lfs_in_sub="${4:-false}"
+
+  if [ "$lfs_in_main" = "true" ]; then
+    setup-lfs-repo "$main_repo"
+    (cd "$main_repo"; add-lfs-file "main.lfs" "Main repo LFS content")
+  fi
+
+  if [ "$lfs_in_sub" = "true" ]; then
+    setup-lfs-repo "$sub_repo"
+    (cd "$sub_repo"; add-lfs-file "sub.lfs" "Sub repo LFS content")
+  else
+    (
+      cd "$sub_repo"
+      echo "Regular sub repo content" > regular.txt
+      git add regular.txt
+      git commit -m "Add regular file to sub repo"
+    ) &> /dev/null
+  fi
+}
+
+test-mixed-lfs-state() {
+  local main_repo="$1"
+  local sub_path="$2"
+  local expected_main_lfs="${3:-true}"
+  local expected_sub_lfs="${4:-false}"
+
+  if [ "$expected_main_lfs" = "true" ]; then
+    test-exists "$main_repo/.gitattributes"
+  else
+    test-exists "!$main_repo/.gitattributes"
+  fi
+
+  if [ "$expected_sub_lfs" = "true" ]; then
+    test-exists "$main_repo/$sub_path/.gitattributes"
+  else
+    test-exists "!$main_repo/$sub_path/.gitattributes"
+  fi
+}
+
+# Helper function to standardize repository configuration
+setup_repository_config() {
+  local repo_path="$1"
+  local user_name="${2:-Test User}"
+  local user_email="${3:-test@example.com}"
+
+  (
+    cd "$repo_path"
+    # Core settings
+    git config core.autocrlf input
+    git config core.filemode true
+    git config core.bare false
+    git config core.logallrefupdates true
+
+    # User settings
+    git config user.name "$user_name"
+    git config user.email "$user_email"
+
+    # Disable interactive prompts
+    git config advice.detachedHead false
+    git config advice.pushNonFastForward false
+    git config advice.statusHints false
+
+    # Color settings (disable for consistent output)
+    git config color.ui false
+    git config color.branch false
+    git config color.diff false
+    git config color.status false
+
+    # Merge/pull settings
+    git config pull.rebase false
+    git config push.default simple
+  )
+}
+
 teardown() {
+  stop-lfs-test-server
   rm -fr "$TMP"
 }

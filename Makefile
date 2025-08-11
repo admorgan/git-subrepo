@@ -43,6 +43,8 @@ help:
 	@echo 'install    Install $(NAME)'
 	@echo 'uninstall  Uninstall $(NAME)'
 	@echo 'env        Show environment variables to set'
+	@echo ''
+	@echo 'Note: Some tests require git-lfs for LFS functionality testing'
 
 .PHONY: test
 test:
