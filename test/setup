@@ -13,7 +13,13 @@ setup_git_config() {
   # Core settings
   git config --global user.name "Test User"
   git config --global user.email "test@example.com"
-  git config --global init.defaultBranch "master"
+  # Only set init.defaultBranch if Git supports it (Git 2.28+)
+  git_version=$(git --version | sed 's/git version //' | head -1)
+  git_major=$(echo "$git_version" | cut -d. -f1)
+  git_minor=$(echo "$git_version" | cut -d. -f2)
+  if [[ $git_major -gt 2 ]] || [[ $git_major -eq 2 && $git_minor -ge 28 ]]; then
+    git config --global init.defaultBranch "master"
+  fi
   git config --global core.autocrlf input
   git config --global core.filemode true
   git config --global core.bare false
@@ -86,7 +92,15 @@ setup_git_config
 
 cp -r test/repo/{foo,bar,init} "$UPSTREAM/"
 
-DEFAULTBRANCH=$( git config --global --get init.defaultbranch || true )
+# Check if Git supports init.defaultbranch (Git 2.28+)
+git_version=$(git --version | sed 's/git version //' | head -1)
+git_major=$(echo "$git_version" | cut -d. -f1)
+git_minor=$(echo "$git_version" | cut -d. -f2)
+if [[ $git_major -gt 2 ]] || [[ $git_major -eq 2 && $git_minor -ge 28 ]]; then
+  DEFAULTBRANCH=$( git config --global --get init.defaultbranch || true )
+else
+  DEFAULTBRANCH=""
+fi
 [[ -z $DEFAULTBRANCH ]] && DEFAULTBRANCH="master"
 export DEFAULTBRANCH
 
