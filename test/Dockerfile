@@ -1,4 +1,4 @@
-FROM ubuntu:20.04
+FROM ubuntu:22.04
 
 ARG DEBIAN_FRONTEND=noninteractive
 
@@ -22,7 +22,24 @@ RUN apt-get install -y \
     unzip \
     libz-dev \
     make \
+    zlib1g-dev \
+    curl \
     && true
+
+# Install lfs-test-server
+RUN mkdir -p /tmp/gobin \
+    && export GO111MODULE=on \
+    && export GOBIN=/tmp/gobin \
+    && export GOPROXY=direct \
+    && export GOTMPDIR=/tmp/go-build \
+    && mkdir -p $GOTMPDIR \
+    && go install github.com/git-lfs/lfs-test-server@latest \
+    && mv /tmp/gobin/lfs-test-server /usr/local/bin/ \
+    && chmod +x /usr/local/bin/lfs-test-server \
+    && rm -rf /tmp/go-build /tmp/gobin \
+    && true
+
+
 
 # Install shellcheck-0.7.1
 RUN cd /root \
